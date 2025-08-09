@@ -5,6 +5,11 @@
 (define-constant ERR_NOT_OWNER (err u104))
 (define-constant ERR_DUPLICATE_ITEM (err u105))
 
+(define-constant REPUTATION_SUCCESSFUL_CLAIM 10)
+(define-constant REPUTATION_VERIFIED_SUBMISSION 5)
+(define-constant REPUTATION_CANCELED_ITEM -3)
+(define-constant REPUTATION_REJECTED_CLAIM -5)
+
 (define-constant STATUS_LOST u1)
 (define-constant STATUS_FOUND u2)
 (define-constant STATUS_CLAIMED u3)
@@ -159,4 +164,90 @@
 
 (define-read-only (get-items-by-status (status uint))
   (list)
+)
+
+
+(define-map user-reputation
+  principal
+  {
+    score: int,
+    successful-claims: uint,
+    verified-submissions: uint,
+    rejected-claims: uint,
+    total-submissions: uint
+  }
+)
+
+(define-private (get-user-rep (user principal))
+  (default-to 
+    {score: 0, successful-claims: u0, verified-submissions: u0, rejected-claims: u0, total-submissions: u0}
+    (map-get? user-reputation user)
+  )
+)
+
+(define-private (update-reputation (user principal) (score-change int) (stat-type (string-ascii 20)))
+  (let ((current-rep (get-user-rep user)))
+    (map-set user-reputation user
+      (merge current-rep
+        {
+          score: (+ (get score current-rep) score-change),
+          successful-claims: (if (is-eq stat-type "claim") (+ (get successful-claims current-rep) u1) (get successful-claims current-rep)),
+          verified-submissions: (if (is-eq stat-type "verify") (+ (get verified-submissions current-rep) u1) (get verified-submissions current-rep)),
+          rejected-claims: (if (is-eq stat-type "reject") (+ (get rejected-claims current-rep) u1) (get rejected-claims current-rep)),
+          total-submissions: (if (is-eq stat-type "submit") (+ (get total-submissions current-rep) u1) (get total-submissions current-rep))
+        }
+      )
+    )
+  )
+)
+
+(define-read-only (get-reputation (user principal))
+  (get-user-rep user)
+)
+
+(define-read-only (get-reputation-score (user principal))
+  (get score (get-user-rep user))
+)
+
+(define-read-only (get-reputation-level (user principal))
+  (let ((score (get score (get-user-rep user))))
+    (if (>= score 100) "Expert"
+      (if (>= score 50) "Trusted" 
+        (if (>= score 20) "Reliable"
+          (if (>= score 0) "Newcomer" "Untrustworthy")
+        )
+      )
+    )
+  )
+)
+
+(define-public (submit-lost-item-with-rep (title (string-ascii 64)) (description (string-ascii 256)) (location (string-ascii 128)) (reward uint))
+  (begin
+    (try! (submit-lost-item title description location reward))
+    (update-reputation tx-sender 0 "submit")
+    (ok (- (var-get next-item-id) u1))
+  )
+)
+
+(define-public (verify-claim-with-rep (item-id uint) (approve bool))
+  (let ((item (unwrap! (map-get? items item-id) ERR_ITEM_NOT_FOUND))
+        (claimer (unwrap! (get claimed-by item) ERR_ITEM_NOT_FOUND)))
+    (try! (verify-claim item-id approve))
+    (if approve
+      (begin
+        (update-reputation claimer REPUTATION_SUCCESSFUL_CLAIM "claim")
+        (update-reputation tx-sender REPUTATION_VERIFIED_SUBMISSION "verify")
+      )
+      (update-reputation claimer REPUTATION_REJECTED_CLAIM "reject")
+    )
+    (ok approve)
+  )
+)
+
+(define-public (cancel-item-with-rep (item-id uint))
+  (begin
+    (try! (cancel-item item-id))
+    (update-reputation tx-sender REPUTATION_CANCELED_ITEM "cancel")
+    (ok true)
+  )
 )
